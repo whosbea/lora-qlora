@@ -8,8 +8,9 @@ from transformers import (
     AutoModelForCausalLM,
     AutoTokenizer,
     BitsAndBytesConfig,
+    TrainingArguments,
 )
-from trl import SFTConfig, SFTTrainer
+from trl import SFTTrainer
 
 
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
@@ -17,17 +18,7 @@ TRAIN_FILE = "data/train.jsonl"
 TEST_FILE = "data/test.jsonl"
 OUTPUT_DIR = "outputs/qwen2_5_penguins_qlora"
 
-MAX_LENGTH = 512
-
-
-def prepare_example(example: dict) -> dict:
-    prompt = str(example.get("prompt", "")).strip()
-    response = str(example.get("response", "")).strip()
-
-    return {
-        "prompt": f"### Instrução:\n{prompt}\n\n### Resposta:\n",
-        "completion": response,
-    }
+MAX_SEQ_LENGTH = 512
 
 
 def get_precision_config() -> tuple[torch.dtype, bool, bool]:
@@ -96,9 +87,6 @@ def main() -> None:
         },
     )
 
-    dataset["train"] = dataset["train"].map(prepare_example)
-    dataset["test"] = dataset["test"].map(prepare_example)
-
     train_size = len(dataset["train"])
     batch_size = 1
     grad_accum = 4
@@ -110,7 +98,7 @@ def main() -> None:
     print(f"Total de passos estimados: {total_steps}")
     print(f"Warmup steps: {warmup_steps}")
 
-    training_args = SFTConfig(
+    training_args = TrainingArguments(
         output_dir=OUTPUT_DIR,
         per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=1,
@@ -119,12 +107,10 @@ def main() -> None:
         learning_rate=2e-4,
         logging_steps=5,
         save_steps=50,
-        eval_strategy="steps",
         eval_steps=50,
+        evaluation_strategy="steps",
         save_strategy="steps",
         report_to="none",
-        max_length=MAX_LENGTH,
-        packing=False,
         fp16=use_fp16,
         bf16=use_bf16,
         optim="paged_adamw_32bit",
@@ -135,11 +121,14 @@ def main() -> None:
 
     trainer = SFTTrainer(
         model=model,
-        args=training_args,
         train_dataset=dataset["train"],
         eval_dataset=dataset["test"],
-        processing_class=tokenizer,
         peft_config=peft_config,
+        dataset_text_field="text",
+        max_seq_length=MAX_SEQ_LENGTH,
+        tokenizer=tokenizer,
+        args=training_args,
+        packing=False,
     )
 
     trainer.train()
