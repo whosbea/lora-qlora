@@ -1,6 +1,8 @@
+google-genai
 datasets
 transformers
 peft
 trl
 accelerate
-google-genai
+bitsandbytes
+torch
