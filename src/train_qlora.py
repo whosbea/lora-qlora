@@ -31,21 +31,14 @@ def prepare_example(example: dict) -> dict:
 
 
 def get_precision_config() -> tuple[torch.dtype, bool, bool]:
-    """
-    Decide automaticamente entre bf16 e fp16 com base na GPU.
-    - Ampere ou superior (capability >= 8): bf16
-    - GPUs mais antigas: fp16
-    """
     if not torch.cuda.is_available():
         raise RuntimeError("Este script precisa de CUDA/GPU para o QLoRA.")
 
     major, _ = torch.cuda.get_device_capability()
 
     if major >= 8:
-        # Ex.: A100, L4, A10, H100...
         return torch.bfloat16, False, True
 
-    # Ex.: T4, V100...
     return torch.float16, True, False
 
 
@@ -137,7 +130,7 @@ def main() -> None:
         optim="paged_adamw_32bit",
         lr_scheduler_type="cosine",
         warmup_steps=warmup_steps,
-        max_grad_norm=1.0,
+        max_grad_norm=0.0,
     )
 
     trainer = SFTTrainer(
