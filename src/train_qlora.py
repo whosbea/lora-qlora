@@ -71,7 +71,7 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=quantization_config,
-        dtype=compute_dtype,
+        torch_dtype=compute_dtype,
         trust_remote_code=True,
         device_map="auto",
     )
