@@ -1,14 +1,22 @@
+from pathlib import Path
+
 import torch
 from peft import PeftModel
 from transformers import AutoModelForCausalLM, AutoTokenizer, BitsAndBytesConfig
 
 
 MODEL_NAME = "Qwen/Qwen2.5-0.5B-Instruct"
-ADAPTER_PATH = "outputs/qwen2_5_penguins_qlora"
+
+BASE_DIR = Path(__file__).resolve().parent.parent
+ADAPTER_PATH = BASE_DIR / "outputs" / "qwen2_5_penguins_qlora"
 
 
 def main() -> None:
     print("Iniciando teste do modelo...")
+    print(f"Caminho do adaptador: {ADAPTER_PATH}")
+
+    if not ADAPTER_PATH.exists():
+        raise FileNotFoundError(f"Adaptador não encontrado em: {ADAPTER_PATH}")
 
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
@@ -32,7 +40,7 @@ def main() -> None:
     )
 
     print("Carregando adaptador...")
-    model = PeftModel.from_pretrained(base_model, ADAPTER_PATH)
+    model = PeftModel.from_pretrained(base_model, str(ADAPTER_PATH))
     model.eval()
 
     prompt = (
