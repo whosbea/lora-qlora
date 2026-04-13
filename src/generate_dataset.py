@@ -1,8 +1,10 @@
 import json
 import random
+import re
 from pathlib import Path
+import os
 
-from openai import OpenAI
+from google import genai
 
 
 OUTPUT_DIR = Path("data")
@@ -12,37 +14,55 @@ TEST_FILE = OUTPUT_DIR / "test.jsonl"
 TOTAL_EXAMPLES = 60
 TRAIN_RATIO = 0.9
 
+
 SYSTEM_PROMPT = """
-Você é um gerador de dataset para fine-tuning.
+Você é um gerador de dataset sintético para fine-tuning de um modelo de linguagem.
+
 Sua tarefa é criar exemplos no domínio "pinguins".
 
-Cada exemplo deve conter:
-- "prompt": uma pergunta ou instrução do usuário
-- "response": uma resposta clara, correta, objetiva e educativa
-
 Regras:
-- Gere exemplos variados.
-- Foque em temas como habitat, alimentação, espécies, reprodução, adaptação ao frio, comportamento, curiosidades e diferenças entre espécies.
-- Evite perguntas repetidas.
+- Gere exatamente a quantidade de exemplos solicitada.
+- Cada exemplo deve ser um objeto JSON com as chaves:
+  - "prompt"
+  - "response"
 - Escreva tudo em português do Brasil.
+- Os prompts devem parecer perguntas ou instruções reais de usuários.
+- As respostas devem ser claras, corretas, curtas ou médias e educativas.
+- Varie os temas: habitat, alimentação, espécies, reprodução, adaptação ao frio, comportamento, curiosidades e diferenças entre espécies.
+- Evite repetição.
 - Não use markdown.
 - Retorne apenas JSON válido.
-- O formato de saída deve ser uma lista JSON com objetos no formato:
-  [{"prompt": "...", "response": "..."}, ...]
+- O formato final deve ser uma lista JSON.
 """
 
-USER_PROMPT = f"""
-Gere {TOTAL_EXAMPLES} exemplos sintéticos sobre pinguins para um dataset de instruções.
 
-Os exemplos devem:
-- ser variados
-- ter perguntas naturais
-- ter respostas curtas ou médias
-- ser informativos e coerentes
-- evitar informações obviamente inventadas
+USER_PROMPT = f"""
+Gere exatamente {TOTAL_EXAMPLES} exemplos sintéticos sobre pinguins.
+
+Formato esperado:
+[
+  {{
+    "prompt": "...",
+    "response": "..."
+  }}
+]
 
 Retorne apenas a lista JSON.
 """
+
+
+def extract_json(text: str) -> str:
+    """
+    Tenta extrair apenas o bloco JSON da resposta do modelo.
+    """
+    text = text.strip()
+
+    # Remove blocos ```json ... ```
+    text = re.sub(r"^```json\s*", "", text)
+    text = re.sub(r"^```\s*", "", text)
+    text = re.sub(r"\s*```$", "", text)
+
+    return text.strip()
 
 
 def save_jsonl(file_path: Path, records: list[dict]) -> None:
@@ -52,22 +72,24 @@ def save_jsonl(file_path: Path, records: list[dict]) -> None:
 
 
 def main() -> None:
-    client = OpenAI()
+    api_key = os.getenv("GEMINI_API_KEY")
+    if not api_key:
+        raise ValueError("A variável de ambiente GEMINI_API_KEY não foi encontrada.")
 
-    response = client.chat.completions.create(
-        model="gpt-4o-mini",
-        temperature=0.8,
-        messages=[
-            {"role": "system", "content": SYSTEM_PROMPT},
-            {"role": "user", "content": USER_PROMPT},
-        ],
+    client = genai.Client(api_key=api_key)
+
+    response = client.models.generate_content(
+        model="gemini-2.5-flash",
+        contents=f"{SYSTEM_PROMPT}\n\n{USER_PROMPT}",
     )
 
-    content = response.choices[0].message.content.strip()
-    examples = json.loads(content)
+    raw_text = response.text
+    json_text = extract_json(raw_text)
+
+    examples = json.loads(json_text)
 
     if not isinstance(examples, list):
-        raise ValueError("A resposta da API não retornou uma lista JSON.")
+        raise ValueError("A resposta do modelo não retornou uma lista JSON.")
 
     cleaned_examples = []
     for item in examples:
@@ -82,7 +104,7 @@ def main() -> None:
                 {
                     "prompt": prompt,
                     "response": response_text,
-                    "text": f"### Instrução:\n{prompt}\n\n### Resposta:\n{response_text}"
+                    "text": f"### Instrução:\n{prompt}\n\n### Resposta:\n{response_text}",
                 }
             )
 
