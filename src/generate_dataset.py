@@ -4,7 +4,7 @@ import re
 from pathlib import Path
 import os
 
-from google import genai
+import requests
 
 
 OUTPUT_DIR = Path("data")
@@ -14,6 +14,13 @@ TEST_FILE = OUTPUT_DIR / "test.jsonl"
 TOTAL_EXAMPLES = 60
 TRAIN_RATIO = 0.9
 
+OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
+
+# Troca aqui pelo modelo que tu quiser usar no OpenRouter
+# Exemplos comuns:
+# - "openai/gpt-3.5-turbo"
+# - "openai/gpt-4o"
+MODEL_NAME = "openai/gpt-3.5-turbo"
 
 SYSTEM_PROMPT = """
 Você é um gerador de dataset sintético para fine-tuning de um modelo de linguagem.
@@ -34,7 +41,6 @@ Regras:
 - Retorne apenas JSON válido.
 - O formato final deve ser uma lista JSON.
 """
-
 
 USER_PROMPT = f"""
 Gere exatamente {TOTAL_EXAMPLES} exemplos sintéticos sobre pinguins.
@@ -71,21 +77,63 @@ def save_jsonl(file_path: Path, records: list[dict]) -> None:
             f.write(json.dumps(record, ensure_ascii=False) + "\n")
 
 
-def main() -> None:
-    api_key = os.getenv("GEMINI_API_KEY")
-    if not api_key:
-        raise ValueError("A variável de ambiente GEMINI_API_KEY não foi encontrada.")
+def generate_with_openrouter(
+    api_key: str,
+    model: str,
+    system_prompt: str,
+    user_prompt: str,
+) -> str:
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type": "application/json",
 
-    client = genai.Client(api_key=api_key)
+        # Opcionais:
+        # "HTTP-Referer": "https://seusite.com",
+        # "X-OpenRouter-Title": "Gerador de Dataset",
+    }
 
-    response = client.models.generate_content(
-        model="gemini-2.5-flash",
-        contents=f"{SYSTEM_PROMPT}\n\n{USER_PROMPT}",
+    payload = {
+        "model": model,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.8,
+    }
+
+    response = requests.post(
+        OPENROUTER_URL,
+        headers=headers,
+        json=payload,
+        timeout=120,
     )
 
-    raw_text = response.text
-    json_text = extract_json(raw_text)
+    # Lança erro HTTP se vier 4xx/5xx
+    response.raise_for_status()
 
+    data = response.json()
+
+    try:
+        return data["choices"][0]["message"]["content"]
+    except (KeyError, IndexError, TypeError) as e:
+        raise ValueError(
+            f"Não foi possível extrair o conteúdo da resposta da API. Resposta recebida: {data}"
+        ) from e
+
+
+def main() -> None:
+    api_key = os.getenv("OPENROUTER_API_KEY")
+    if not api_key:
+        raise ValueError("A variável de ambiente OPENROUTER_API_KEY não foi encontrada.")
+
+    raw_text = generate_with_openrouter(
+        api_key=api_key,
+        model=MODEL_NAME,
+        system_prompt=SYSTEM_PROMPT,
+        user_prompt=USER_PROMPT,
+    )
+
+    json_text = extract_json(raw_text)
     examples = json.loads(json_text)
 
     if not isinstance(examples, list):
@@ -125,6 +173,7 @@ def main() -> None:
     save_jsonl(TRAIN_FILE, train_data)
     save_jsonl(TEST_FILE, test_data)
 
+    print(f"Modelo usado: {MODEL_NAME}")
     print(f"Total de exemplos válidos: {len(cleaned_examples)}")
     print(f"Treino: {len(train_data)} exemplos")
     print(f"Teste: {len(test_data)} exemplos")
