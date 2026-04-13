@@ -1,6 +1,7 @@
-import torch
+import math
 from pathlib import Path
 
+import torch
 from datasets import load_dataset
 from peft import LoraConfig
 from transformers import (
@@ -29,6 +30,25 @@ def prepare_example(example: dict) -> dict:
     }
 
 
+def get_precision_config() -> tuple[torch.dtype, bool, bool]:
+    """
+    Decide automaticamente entre bf16 e fp16 com base na GPU.
+    - Ampere ou superior (capability >= 8): bf16
+    - GPUs mais antigas: fp16
+    """
+    if not torch.cuda.is_available():
+        raise RuntimeError("Este script precisa de CUDA/GPU para o QLoRA.")
+
+    major, _ = torch.cuda.get_device_capability()
+
+    if major >= 8:
+        # Ex.: A100, L4, A10, H100...
+        return torch.bfloat16, False, True
+
+    # Ex.: T4, V100...
+    return torch.float16, True, False
+
+
 def main() -> None:
     if not Path(TRAIN_FILE).exists():
         raise FileNotFoundError(f"Arquivo não encontrado: {TRAIN_FILE}")
@@ -36,10 +56,18 @@ def main() -> None:
     if not Path(TEST_FILE).exists():
         raise FileNotFoundError(f"Arquivo não encontrado: {TEST_FILE}")
 
+    compute_dtype, use_fp16, use_bf16 = get_precision_config()
+
+    print("Configuração de precisão:")
+    print(f"  compute_dtype = {compute_dtype}")
+    print(f"  fp16 = {use_fp16}")
+    print(f"  bf16 = {use_bf16}")
+    print(f"  GPU = {torch.cuda.get_device_name(0)}")
+
     quantization_config = BitsAndBytesConfig(
         load_in_4bit=True,
         bnb_4bit_quant_type="nf4",
-        bnb_4bit_compute_dtype=torch.float16,
+        bnb_4bit_compute_dtype=compute_dtype,
     )
 
     tokenizer = AutoTokenizer.from_pretrained(MODEL_NAME, use_fast=True)
@@ -50,8 +78,9 @@ def main() -> None:
     model = AutoModelForCausalLM.from_pretrained(
         MODEL_NAME,
         quantization_config=quantization_config,
-        dtype=torch.float16,
+        dtype=compute_dtype,
         trust_remote_code=True,
+        device_map="auto",
     )
 
     model.config.use_cache = False
@@ -77,12 +106,23 @@ def main() -> None:
     dataset["train"] = dataset["train"].map(prepare_example)
     dataset["test"] = dataset["test"].map(prepare_example)
 
+    train_size = len(dataset["train"])
+    batch_size = 1
+    grad_accum = 4
+    epochs = 3
+    steps_per_epoch = math.ceil(train_size / (batch_size * grad_accum))
+    total_steps = steps_per_epoch * epochs
+    warmup_steps = max(1, int(total_steps * 0.03))
+
+    print(f"Total de passos estimados: {total_steps}")
+    print(f"Warmup steps: {warmup_steps}")
+
     training_args = SFTConfig(
         output_dir=OUTPUT_DIR,
-        per_device_train_batch_size=1,
+        per_device_train_batch_size=batch_size,
         per_device_eval_batch_size=1,
-        gradient_accumulation_steps=4,
-        num_train_epochs=3,
+        gradient_accumulation_steps=grad_accum,
+        num_train_epochs=epochs,
         learning_rate=2e-4,
         logging_steps=5,
         save_steps=50,
@@ -92,10 +132,12 @@ def main() -> None:
         report_to="none",
         max_length=MAX_LENGTH,
         packing=False,
-        fp16=True,
+        fp16=use_fp16,
+        bf16=use_bf16,
         optim="paged_adamw_32bit",
         lr_scheduler_type="cosine",
-        warmup_ratio=0.03,
+        warmup_steps=warmup_steps,
+        max_grad_norm=1.0,
     )
 
     trainer = SFTTrainer(
